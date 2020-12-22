@@ -16,7 +16,7 @@ class BertForClozeBaseline(BertPreTrainedModel):
             nn.Linear(conf.hidden_size, 1),
             # nn.Sigmoid()
         )
-        self.embed.weight.data.copy_(torch.nn.init.normal_(self.classifier[1].weight, std=0.05))
+        
 
         torch.nn.init.normal_(self.classifier[1].weight, std=0.05)
 
