@@ -44,9 +44,10 @@ class config:
     TEST_BATCH_SIZE = 32
     EPOCHS = 20
     SEED = 42
+    lr = 2e-5
 
     DO_TRAIN = True
-    DO_TEST = False
+    DO_TEST = True
     BERT_PATH = project_dir + "/pretrained_models/chinese_wwm_pytorch"
     # BERT_PATH = project_dir + "/pretrained_models/ernie_based_pretrained"
 
@@ -57,7 +58,7 @@ class config:
 
     # train_features = os.path.join(midata_dir, "train_features.pkl")
     # valid_features = os.path.join(midata_dir, "valid_features.pkl")
-    MODEL_SAVE_PATH = project_dir + f"/output/trained_{BERT_PATH.split('/')[-1]}"
+    MODEL_SAVE_PATH = project_dir + f"/output/trained_{BERT_PATH.split('/')[-1]}_baseline"
     PREDICT_FILE_SAVE_PATH = project_dir + f"/output"
 
 
@@ -237,7 +238,7 @@ def run_one_step(batch, model, device):
     return logits
 
 
-def train_fn(data_loader, model, optimizer, device, epoch, valid_data_loader, es, scheduler=None):
+def train_fn(data_loader, model, optimizer, device, epoch, scheduler=None):
     """
     Trains the bert model on the twitter data
     """
@@ -263,13 +264,6 @@ def train_fn(data_loader, model, optimizer, device, epoch, valid_data_loader, es
         outputs = torch.softmax(logits, dim=1).cpu().detach().numpy()
         pred_label = np.argmax(outputs, axis=1)
         acc = accuracy_score(label.cpu().numpy(), pred_label)
-        if (bi+1) % 1000 == 0:
-            eval_acc = eval_fn(valid_data_loader, model, device)
-            logger.info(f"epoch: {epoch + 1}, acc = {acc}")
-            es(epoch, acc, model, model_path=config.MODEL_SAVE_PATH)
-            if es.early_stop:
-                print("********** Early stopping ********")
-                break
         # Print the average loss and jaccard score at the end of each batch
         tk0.set_postfix(epoch=epoch, acc=acc, loss=loss.item())
     # Update scheduler
@@ -350,11 +344,11 @@ def train():
     no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
     # Define two sets of parameters: those with weight decay, and those without
     optimizer_parameters = [
-        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.001},
+        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0},
     ]
     # Instantiate AdamW optimizer with our two sets of parameters, and a learning rate of 3e-5
-    optimizer = AdamW(optimizer_parameters, lr=5e-6)
+    optimizer = AdamW(optimizer_parameters, lr=config.lr)
     # Create a scheduler to set the learning rate at each training step
     # "Create a schedule with a learning rate that decreases linearly after linearly increasing during a warmup period." (https://pytorch.org/docs/stable/optim.html)
     # Since num_warmup_steps = 0, the learning rate starts at 3e-5, and then linearly decreases at each training step
@@ -369,7 +363,10 @@ def train():
     es = EarlyStopping(patience=5, mode="max", delta=0.0000001)
     # I'm training only for 3 epochs even though I specified 5!!!
     for epoch in range(config.EPOCHS):
-        train_fn(train_data_loader, model, optimizer, device, epoch + 1, valid_data_loader, es, scheduler=scheduler)
+        train_fn(train_data_loader, model, optimizer, device, epoch + 1, scheduler=scheduler)
+        eval_acc = eval_fn(valid_data_loader, model, device)
+        logger.info(f"epoch: {epoch + 1}, acc = {eval_acc}")
+        es(epoch, eval_acc, model, model_path=config.MODEL_SAVE_PATH)
         if es.early_stop:
             print("********** Early stopping ********")
             break
@@ -417,7 +414,6 @@ def predict():
     test_acc = accuracy_score(true_labels, pred_labels)
     logger.info(f"test acc: {test_acc}")
     return pred_labels
-
 
 
 def seed_set(seed):

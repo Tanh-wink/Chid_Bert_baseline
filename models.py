@@ -8,16 +8,17 @@ class BertForClozeBaseline(BertPreTrainedModel):
     def __init__(self, conf, idiom_num, pretrained_model_path=None):
         super(BertForClozeBaseline, self).__init__(conf)
         # 768 is the dimensionality of bert-base-uncased's hidden representations
+        # Load the pretrained BERT model
+        self.bert = BertModel.from_pretrained(pretrained_model_path, config=conf)
+        self.idiom_embedding = nn.Embedding(idiom_num, conf.hidden_size)
         self.classifier = nn.Sequential(
             nn.Dropout(0.5),
             nn.Linear(conf.hidden_size, 1),
             # nn.Sigmoid()
         )
-        self.idiom_embedding = nn.Embedding(idiom_num, conf.hidden_size)
-        # Load the pretrained BERT model
-        self.bert = BertModel.from_pretrained(pretrained_model_path, config=conf)
+        self.embed.weight.data.copy_(torch.nn.init.normal_(self.classifier[1].weight, std=0.05))
 
-
+        torch.nn.init.normal_(self.classifier[1].weight, std=0.05)
 
     def forward(self, input_ids, attention_mask, token_type_ids, idiom_ids, positions):
         # input_ids [batch, max_seq_length]  encoded_layer [batch, max_seq_length, hidden_state]
