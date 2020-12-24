@@ -11,7 +11,7 @@ sys.path.append('../')
 
 import transformers
 from transformers import AdamW, BertTokenizer, BertForSequenceClassification
-from transformers import get_linear_schedule_with_warmup
+from transformers import get_linear_schedule_with_warmup # WarmupLinearSchedule
 from tqdm import tqdm
 from utils import load_pkl_data, save_pkl_data, EarlyStopping
 from models import BertForClozeBaseline
@@ -37,14 +37,14 @@ device = torch.device("cuda")
 n_gpu = torch.cuda.device_count()
 
 class config:
-    MAX_LEN = 256
+    MAX_LEN = 128
 
-    TRAIN_BATCH_SIZE = 32
-    VALID_BATCH_SIZE = 32
-    TEST_BATCH_SIZE = 32
-    EPOCHS = 20
+    TRAIN_BATCH_SIZE = 40
+    VALID_BATCH_SIZE = 64
+    TEST_BATCH_SIZE = 64
+    EPOCHS = 5
     SEED = 42
-    lr = 2e-5
+    lr = 5e-5
 
     DO_TRAIN = True
     DO_TEST = True
@@ -248,27 +248,31 @@ def train_fn(data_loader, model, optimizer, device, epoch, scheduler=None):
     tk0 = tqdm(data_loader, total=len(data_loader))
     # Train the model on each batch
     # Reset gradients
-    model.zero_grad()
-    for bi, batch in enumerate(tk0):
 
+    for bi, batch in enumerate(tk0):
+        model.zero_grad()
         logits = run_one_step(batch, model, device)
         label = batch["label"].to(device)
         # # Calculate batch loss based on CrossEntropy
         loss_fn = torch.nn.CrossEntropyLoss()
         loss = loss_fn(logits, label)
         # Calculate gradients based on loss
+
         loss.backward()
-        optimizer.step()
+        optimizer.step()   #更新模型参数
         optimizer.zero_grad()
+        # Update scheduler
+        #   # 更新learning rate
+        # print(f"lr={scheduler.get_lr()}")
+        scheduler.step()
+
         # Calculate the acc score based on the predictions for this batch
         outputs = torch.softmax(logits, dim=1).cpu().detach().numpy()
         pred_label = np.argmax(outputs, axis=1)
         acc = accuracy_score(label.cpu().numpy(), pred_label)
         # Print the average loss and jaccard score at the end of each batch
         tk0.set_postfix(epoch=epoch, acc=acc, loss=loss.item())
-    # Update scheduler
-    scheduler.step()
-    return model
+
 
 
 def eval_fn(valid_data_loader, model, device):
@@ -311,33 +315,37 @@ def train():
     train_dataset = convert_to_features(df_train, midata_dir + f"/train_features_{config.MAX_LEN}", is_train=True)
     # Instantiate DataLoader with `train_dataset`
     # This is a generator that yields the dataset in batches
+    logger.info(f"the number of train example:{len(train_dataset)}")
     train_data_loader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
         batch_size=config.TRAIN_BATCH_SIZE,
-        # num_workers=4
+        num_workers=0
     )
     df_dev = read_data(os.path.join(data_dir, "dev_data.txt"))
     valid_dataset = convert_to_features(df_dev, midata_dir + f"/dev_features_{config.MAX_LEN}.pkl")
+    logger.info(f"the number of dev example:{len(valid_dataset)}")
     # Instantiate DataLoader with `valid_dataset`
     valid_data_loader = torch.utils.data.DataLoader(
         valid_dataset,
         batch_size=config.VALID_BATCH_SIZE,
-        # num_workers=4
+        num_workers=0
     )
 
     model_config = transformers.BertConfig.from_pretrained(config.BERT_PATH)
     # This is important to set since we want to concatenate the hidden states from the last 2 BERT layers
     model_config.output_hidden_states = True
     # Instantiate our model with `model_config`
-    model = BertForClozeBaseline(conf=model_config, idiom_num=len(idiom_vocab), pretrained_model_path=config.BERT_PATH)
+    model = BertForClozeBaseline.from_pretrained(pretrained_model_name_or_path=config.BERT_PATH,
+                                                 config=model_config, idiom_num=len(idiom_vocab))
+
     # Move the model to the GPU
     model.to(device)
     if n_gpu > 1:
         model = torch.nn.DataParallel(model)
 
     # Calculate the number of training steps
-    num_train_steps = int(len(train_data_loader) / config.TRAIN_BATCH_SIZE * config.EPOCHS)
+    num_train_steps = int(len(train_dataset) / config.TRAIN_BATCH_SIZE * config.EPOCHS)
     # Get the list of named parameters
     param_optimizer = list(model.named_parameters())
     # Specify parameters where weight decay shouldn't be applied
@@ -354,16 +362,16 @@ def train():
     # Since num_warmup_steps = 0, the learning rate starts at 3e-5, and then linearly decreases at each training step
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=0,
+        num_warmup_steps=1000,
         num_training_steps=num_train_steps,
 
     )
     # Apply early stopping with patience of 2
     # This means to stop training new epochs when 2 rounds have passed without any improvement
-    es = EarlyStopping(patience=5, mode="max", delta=0.0000001)
+    es = EarlyStopping(patience=2, mode="max", delta=0.00001)
     # I'm training only for 3 epochs even though I specified 5!!!
     for epoch in range(config.EPOCHS):
-        train_fn(train_data_loader, model, optimizer, device, epoch + 1, scheduler=scheduler)
+        train_fn(train_data_loader, model, optimizer, device, epoch + 1, scheduler)
         eval_acc = eval_fn(valid_data_loader, model, device)
         logger.info(f"epoch: {epoch + 1}, acc = {eval_acc}")
         es(epoch, eval_acc, model, model_path=config.MODEL_SAVE_PATH)
@@ -386,7 +394,8 @@ def predict():
     model_config = transformers.BertConfig.from_pretrained(model_path)
     model_path = config.MODEL_SAVE_PATH
     # Instantiate our model with `model_config`
-    model = BertForClozeBaseline(conf=model_config, idiom_num=len(idiom_vocab), pretrained_model_path=model_path)
+    model = BertForClozeBaseline.from_pretrained(pretrained_model_name_or_path=model_path,
+                                                 config=model_config, idiom_num=len(idiom_vocab))
     # # Load each of the five trained models and move to GPU
     trained_model_path = os.path.join(model_path, "pytorch_model.bin")
     model.load_state_dict(torch.load(trained_model_path))
